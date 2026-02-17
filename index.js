@@ -1,5 +1,4 @@
 require("dotenv").config();
-const fetch = require("node-fetch");
 const express = require("express");
 const { Rcon } = require("rcon-client");
 
@@ -559,3 +558,4 @@ app.post("/paypal/webhook", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("🌐 Webhook server działa na porcie", PORT));
+
