@@ -1,14 +1,16 @@
 {
-  "name": "justsky-bot",
+  "name": "justsky-discord-shop",
   "version": "1.0.0",
-  "main": "index.js",
   "type": "commonjs",
+  "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "discord.js": "^14.16.3",
     "dotenv": "^16.4.5",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "node-fetch": "^2.7.0",
+    "rcon-client": "^4.2.2"
   }
 }
