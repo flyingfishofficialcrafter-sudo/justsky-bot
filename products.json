@@ -1,0 +1,45 @@
+{
+  "currency": "PLN",
+  "products": [
+    {
+      "id": "key_zwykla",
+      "name": "🔑 Klucz Zwykłej Skrzyni",
+      "price": 2.46,
+      "minQty": 1,
+      "maxQty": 64,
+      "commands": [
+        "getcase give {player} zwykla {amount}"
+      ]
+    },
+    {
+      "id": "key_piekielna",
+      "name": "🔥 Klucz Piekielnej Skrzyni",
+      "price": 6.15,
+      "minQty": 1,
+      "maxQty": 64,
+      "commands": [
+        "getcase give {player} piekielna {amount}"
+      ]
+    },
+    {
+      "id": "key_tajemnicza",
+      "name": "🟣 Klucz Tajemniczej Skrzyni",
+      "price": 12.30,
+      "minQty": 1,
+      "maxQty": 64,
+      "commands": [
+        "getcase give {player} tajemnicza {amount}"
+      ]
+    },
+    {
+      "id": "odlamki",
+      "name": "💎 Odłamki (1 szt = 0.30 PLN)",
+      "price": 0.30,
+      "minQty": 1,
+      "maxQty": 1000,
+      "commands": [
+        "tajemniczyodlamek {player} {amount}"
+      ]
+    }
+  ]
+}
