@@ -8,7 +8,7 @@
       "minQty": 1,
       "maxQty": 64,
       "commands": [
-        "getcase give {player} zwykla {amount}"
+        "minecraft:getcase give {player} zwykla {amount}"
       ]
     },
     {
@@ -43,3 +43,4 @@
     }
   ]
 }
+
