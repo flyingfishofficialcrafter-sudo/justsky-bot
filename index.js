@@ -1,14 +1,35 @@
-require("dotenv").config();
-const express = require("express");
-const { Rcon } = require("rcon-client");
+/**
+ * JustSky Shop Bot — 1 plik index.js
+ * Discord.js v14 + PayPal (create order -> approve -> check -> capture -> deliver)
+ *
+ * ENV REQUIRED:
+ * DISCORD_TOKEN=...
+ * GUILD_ID=...
+ * SHOP_PANEL_CHANNEL_ID=...         (kanał gdzie ma być panel)
+ * SHOP_LOG_CHANNEL_ID=...           (kanał logów/komend do MC dla adminów)
+ * SHOP_TICKETS_CATEGORY_ID=...      (kategoria na tickety)
+ *
+ * PAYPAL_CLIENT_ID=...
+ * PAYPAL_CLIENT_SECRET=...
+ * PAYPAL_MODE=sandbox | live
+ *
+ * OPTIONAL:
+ * BASE_URL=https://twoj-bot.onrender.com   (jak masz; nie jest wymagane w tym flow)
+ * MC_WEBHOOK_URL=https://...              (jeśli masz plugin/webhook do wykonywania komend)
+ *
+ * Komendy:
+ * /setupshop  -> wysyła panel w SHOP_PANEL_CHANNEL_ID
+ */
 
+const express = require("express");
+const crypto = require("crypto");
 const {
   Client,
   GatewayIntentBits,
-  REST,
-  Routes,
-  SlashCommandBuilder,
-  PermissionFlagsBits,
+  Partials,
+  PermissionsBitField,
+  ChannelType,
+  EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
@@ -16,546 +37,740 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  EmbedBuilder,
-  ChannelType
+  SlashCommandBuilder,
+  REST,
+  Routes,
 } = require("discord.js");
 
-const {
-  DISCORD_TOKEN,
-  DISCORD_CLIENT_ID,
+// ===================== ENV =====================
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
+const GUILD_ID = process.env.GUILD_ID;
 
-  PAYPAL_CLIENT_ID,
-  PAYPAL_SECRET,
-  PAYPAL_MODE = "sandbox",
-  WEBHOOK_TOKEN,
+const SHOP_PANEL_CHANNEL_ID = process.env.SHOP_PANEL_CHANNEL_ID;
+const SHOP_LOG_CHANNEL_ID = process.env.SHOP_LOG_CHANNEL_ID;
+const SHOP_TICKETS_CATEGORY_ID = process.env.SHOP_TICKETS_CATEGORY_ID;
 
-  RCON_HOST,
-  RCON_PORT,
-  RCON_PASSWORD,
+const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
+const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET;
+const PAYPAL_MODE = (process.env.PAYPAL_MODE || "sandbox").toLowerCase();
 
-  SHOP_PANEL_CHANNEL_ID,
-  SHOP_LOG_CHANNEL_ID,
-  TICKET_CATEGORY_ID
-} = process.env;
+const BASE_URL = process.env.BASE_URL || "";
+const MC_WEBHOOK_URL = process.env.MC_WEBHOOK_URL || "";
 
-if (!DISCORD_TOKEN || !DISCORD_CLIENT_ID) {
-  console.log("Brakuje DISCORD_TOKEN albo DISCORD_CLIENT_ID");
-  process.exit(1);
-}
+// ===================== BASIC VALIDATION =====================
+if (!DISCORD_TOKEN) throw new Error("Brak DISCORD_TOKEN w ENV");
+if (!GUILD_ID) throw new Error("Brak GUILD_ID w ENV");
+if (!SHOP_PANEL_CHANNEL_ID) throw new Error("Brak SHOP_PANEL_CHANNEL_ID w ENV");
+if (!SHOP_LOG_CHANNEL_ID) throw new Error("Brak SHOP_LOG_CHANNEL_ID w ENV");
+if (!SHOP_TICKETS_CATEGORY_ID) throw new Error("Brak SHOP_TICKETS_CATEGORY_ID w ENV");
+if (!PAYPAL_CLIENT_ID) throw new Error("Brak PAYPAL_CLIENT_ID w ENV");
+if (!PAYPAL_CLIENT_SECRET) throw new Error("Brak PAYPAL_CLIENT_SECRET w ENV");
 
+// ===================== PAYPAL ENDPOINT =====================
 const PAYPAL_API = PAYPAL_MODE === "live"
   ? "https://api-m.paypal.com"
   : "https://api-m.sandbox.paypal.com";
 
-// ====== Produkty (edytuj nazwy/ceny/komendy) ======
+// ===================== PRODUCTS (TU USTAWIASZ KOMENDY MC) =====================
+// Podmień nazwy / ceny / komendy na swoje.
 const PRODUCTS = {
-  zwykly_klucz: {
+  key_zwykla: {
+    id: "key_zwykla",
     name: "🔑 Klucz Zwykłej Skrzyni",
-    pricePLN: 2.00,
-    command: "getcase give {player} zwykla {amount}"
+    pricePLN: 2.46,
+    minQty: 1,
+    maxQty: 64,
+    commands: [
+      // {player} = nick, {amount} = ilość
+      "crates key give {player} zwykla {amount}"
+    ],
   },
-  piekielny_klucz: {
+  key_piekielna: {
+    id: "key_piekielna",
     name: "🔥 Klucz Piekielnej Skrzyni",
-    pricePLN: 5.00,
-    command: "getcase give {player} piekielna {amount}"
+    pricePLN: 6.15,
+    minQty: 1,
+    maxQty: 64,
+    commands: [
+      "crates key give {player} piekielna {amount}"
+    ],
   },
-  tajemniczy_klucz: {
-    name: "✨ Klucz Tajemniczej Skrzyni",
-    pricePLN: 10.00,
-    command: "getcase give {player} tajemnicza {amount}"
+  key_tajemnicza: {
+    id: "key_tajemnicza",
+    name: "🟣 Klucz Tajemniczej Skrzyni",
+    pricePLN: 12.30,
+    minQty: 1,
+    maxQty: 64,
+    commands: [
+      "crates key give {player} tajemnicza {amount}"
+    ],
   },
-  skycoin: {
-    name: "🪙 SkyCoin",
-    pricePLN: 0.20,
-    command: "eco give {player} {amount}"
+
+  skycoin_100: {
+    id: "skycoin_100",
+    name: "💠 SkyCoin x100",
+    pricePLN: 3.99,
+    minQty: 1,
+    maxQty: 100,
+    commands: [
+      "eco give {player} 100"
+    ],
   },
-  odlamki: {
-    name: "💠 Odłamki",
-    pricePLN: 0.05,
-    minAmount: 200, // 200 * 0.05 = 10 PLN minimum (możesz zmienić)
-    command: "odlamki add {player} {amount}"
-  }
 };
 
-// ====== pamięć zamówień (prosto, działa na start) ======
-const ORDERS = new Map(); // internalId -> order data
+// ===================== STATE / SECURITY =====================
+const stateStore = new Map();          // channelId -> { ownerId, productId, qty, nick, panelMessageId, orderId, paid }
+const activeTicketsByUser = new Map(); // userId -> channelId
+const createCooldown = new Map();      // userId -> timestamp
+const COOLDOWN_MS = 60_000;
 
-function makeInternalId() {
-  return `JS-${Date.now().toString(36).toUpperCase()}`;
+// ===================== HELPERS =====================
+function moneyPLN(n) {
+  return `${n.toFixed(2)} PLN`;
+}
+function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n));
+}
+function isValidMcNick(nick) {
+  return /^[a-zA-Z0-9_]{3,16}$/.test(nick);
+}
+function buildCommands(product, nick, qty) {
+  return product.commands.map(cmd =>
+    cmd.replaceAll("{player}", nick).replaceAll("{amount}", String(qty))
+  );
 }
 
-function fmtPLN(n) {
-  return n.toFixed(2).replace(".", ",") + " PLN";
+function calcTotal(product, qty) {
+  // PayPal lubi string z 2 miejscami.
+  const total = product.pricePLN * qty;
+  return Number(total.toFixed(2));
 }
 
-// ====== PayPal ======
+// ===================== PAYPAL API =====================
 async function paypalAccessToken() {
-  if (!PAYPAL_CLIENT_ID || !PAYPAL_SECRET) throw new Error("Brak PAYPAL_CLIENT_ID lub PAYPAL_SECRET");
+  const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString("base64");
 
-  const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_SECRET}`).toString("base64");
-  const r = await fetch(`${PAYPAL_API}/v1/oauth2/token`, {
+  const res = await fetch(`${PAYPAL_API}/v1/oauth2/token`, {
     method: "POST",
     headers: {
-      Authorization: `Basic ${auth}`,
-      "Content-Type": "application/x-www-form-urlencoded"
+      "Authorization": `Basic ${auth}`,
+      "Content-Type": "application/x-www-form-urlencoded",
     },
-    body: "grant_type=client_credentials"
+    body: "grant_type=client_credentials",
   });
 
-  if (!r.ok) throw new Error("PayPal token error: " + await r.text());
-  const data = await r.json();
-  return data.access_token;
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`PayPal token error: ${res.status} ${t}`);
+  }
+
+  const json = await res.json();
+  return json.access_token;
 }
 
-async function paypalCreateOrder({ internalId, totalPLN, description }) {
+async function paypalCreateOrder({ totalPLN, description, customId }) {
   const token = await paypalAccessToken();
 
-  const body = {
+  const payload = {
     intent: "CAPTURE",
-    purchase_units: [{
-      custom_id: internalId,
-      description: description.slice(0, 127),
-      amount: {
-        currency_code: "PLN",
-        value: totalPLN.toFixed(2)
-      }
-    }],
-    application_context: { user_action: "PAY_NOW" }
+    purchase_units: [
+      {
+        reference_id: customId,
+        description,
+        custom_id: customId,
+        amount: {
+          currency_code: "PLN",
+          value: totalPLN.toFixed(2),
+        },
+      },
+    ],
+    application_context: {
+      brand_name: "JustSky.pl",
+      landing_page: "LOGIN",
+      user_action: "PAY_NOW",
+    },
   };
 
-  const r = await fetch(`${PAYPAL_API}/v2/checkout/orders`, {
+  const res = await fetch(`${PAYPAL_API}/v2/checkout/orders`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body)
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
   });
 
-  const data = await r.json();
-  if (!r.ok) throw new Error("PayPal create order error: " + JSON.stringify(data));
+  const json = await res.json();
 
-  const approveUrl = (data.links || []).find(l => l.rel === "approve")?.href;
-  return { paypalOrderId: data.id, approveUrl };
+  if (!res.ok) {
+    throw new Error(`PayPal create order error: ${res.status} ${JSON.stringify(json)}`);
+  }
+
+  const approveLink = (json.links || []).find(l => l.rel === "approve")?.href;
+  return { orderId: json.id, approveLink };
 }
 
 async function paypalGetOrder(orderId) {
   const token = await paypalAccessToken();
-  const r = await fetch(`${PAYPAL_API}/v2/checkout/orders/${orderId}`, {
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  const data = await r.json();
-  if (!r.ok) throw new Error("PayPal get order error: " + JSON.stringify(data));
-  return data;
-}
 
-// ====== RCON ======
-async function runRconCommand(cmd) {
-  if (!RCON_HOST || !RCON_PORT || !RCON_PASSWORD) throw new Error("Brak RCON_HOST/RCON_PORT/RCON_PASSWORD w ENV");
-
-  const rcon = await Rcon.connect({
-    host: RCON_HOST,
-    port: Number(RCON_PORT),
-    password: RCON_PASSWORD
+  const res = await fetch(`${PAYPAL_API}/v2/checkout/orders/${orderId}`, {
+    headers: { "Authorization": `Bearer ${token}` },
   });
 
-  try {
-    const res = await rcon.send(cmd);
-    return res;
-  } finally {
-    rcon.end();
-  }
+  const json = await res.json();
+  if (!res.ok) throw new Error(`PayPal get order error: ${res.status} ${JSON.stringify(json)}`);
+  return json;
 }
 
-function renderCommand(template, player, amount) {
-  return template
-    .replaceAll("{player}", player)
-    .replaceAll("{amount}", String(amount));
+async function paypalCaptureOrder(orderId) {
+  const token = await paypalAccessToken();
+
+  const res = await fetch(`${PAYPAL_API}/v2/checkout/orders/${orderId}/capture`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+  });
+
+  const json = await res.json();
+  if (!res.ok) throw new Error(`PayPal capture error: ${res.status} ${JSON.stringify(json)}`);
+  return json;
 }
 
-// ====== Discord ======
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+// ===================== DISCORD BOT =====================
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMembers,
+  ],
+  partials: [Partials.Channel],
+});
 
-async function log(text) {
-  if (!SHOP_LOG_CHANNEL_ID) return;
-  try {
-    const ch = await client.channels.fetch(SHOP_LOG_CHANNEL_ID);
-    if (ch) ch.send({ content: text });
-  } catch {}
-}
-
-// Slash: /panel (admin) żeby wstawić panel sklepu
-const commands = [
-  new SlashCommandBuilder()
-    .setName("panel")
-    .setDescription("Wstaw panel sklepu (button) na kanał panelu.")
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-].map(c => c.toJSON());
-
+// ===== Slash commands register =====
 async function registerCommands() {
+  const commands = [
+    new SlashCommandBuilder()
+      .setName("setupshop")
+      .setDescription("Wyślij panel sklepu na kanał panelu")
+      .toJSON(),
+  ];
+
   const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
-  await rest.put(Routes.applicationCommands(DISCORD_CLIENT_ID), { body: commands });
-  console.log("✅ Komendy zarejestrowane (/panel)");
+  await rest.put(Routes.applicationGuildCommands((await client.application.fetch()).id, GUILD_ID), {
+    body: commands,
+  });
 }
 
-// UI builders
-function shopPanelMessage() {
-  const emb = new EmbedBuilder()
-    .setTitle("🛒 JustSky — Sklep (Automatycznie)")
-    .setDescription([
-      "Kliknij **Kup**, a bot utworzy ticket.",
-      "W tickecie wybierzesz produkt, ilość i wpiszesz nick.",
-      "",
-      "✅ PayPal / karta",
-      "✅ Automatyczna realizacja"
-    ].join("\n"));
+// ===================== UI BUILDERS =====================
+function buildMainPanelEmbed() {
+  return new EmbedBuilder()
+    .setTitle("🛒 Sklep JustSky — SkyGen")
+    .setDescription(
+      [
+        "**Zakup w 30 sekund:**",
+        "1) Kliknij **Kup / Otwórz ticket**",
+        "2) Wybierz produkt i ilość",
+        "3) Podaj nick",
+        "4) Zapłać PayPal → odbierz automatycznie",
+        "",
+        "⚠️ Jeden ticket na osobę. Nie spamuj — bot blokuje.",
+      ].join("\n")
+    )
+    .setColor(0x2ecc71);
+}
 
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("open_ticket")
-      .setLabel("Kup")
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId("how_it_works")
-      .setLabel("Jak to działa?")
-      .setStyle(ButtonStyle.Secondary)
+function buildMainPanelComponents() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("shop:openTicket")
+        .setLabel("Kup / Otwórz ticket")
+        .setStyle(ButtonStyle.Success)
+        .setEmoji("🧾")
+    ),
+  ];
+}
+
+function buildTicketPanelMessage(state) {
+  const product = state.productId ? PRODUCTS[state.productId] : null;
+
+  const embed = new EmbedBuilder()
+    .setTitle("🧾 Ticket zakupu — JustSky")
+    .setColor(0x00d1ff)
+    .setDescription(
+      [
+        "**Kroki:**",
+        "1) Wybierz produkt",
+        "2) Ustaw ilość (+ / -)",
+        "3) Podaj nick",
+        "4) Kliknij **Zapłać**",
+        "",
+        state.paid ? "✅ **Płatność: ZAKOŃCZONA**" : "⏳ **Płatność: OCZEKUJE**",
+      ].join("\n")
+    )
+    .addFields(
+      { name: "Produkt", value: product ? product.name : "—", inline: true },
+      { name: "Ilość", value: String(state.qty ?? 1), inline: true },
+      { name: "Nick", value: state.nick ? `\`${state.nick}\`` : "—", inline: true },
+    );
+
+  if (product) {
+    const total = calcTotal(product, state.qty || 1);
+    embed.addFields({ name: "Suma", value: moneyPLN(total), inline: true });
+  }
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId("shop:selectProduct")
+    .setPlaceholder("Wybierz produkt…")
+    .addOptions(
+      Object.values(PRODUCTS).slice(0, 25).map(p => ({
+        label: p.name,
+        value: p.id,
+        description: `${moneyPLN(p.pricePLN)} / szt`,
+      }))
+    );
+
+  const row1 = new ActionRowBuilder().addComponents(select);
+
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("shop:qtyMinus").setStyle(ButtonStyle.Secondary).setEmoji("➖"),
+    new ButtonBuilder().setCustomId("shop:qtyPlus").setStyle(ButtonStyle.Secondary).setEmoji("➕"),
+    new ButtonBuilder().setCustomId("shop:enterNick").setStyle(ButtonStyle.Primary).setLabel("Podaj nick").setEmoji("👤"),
   );
 
-  return { embeds: [emb], components: [row] };
-}
-
-function productSelectRow() {
-  const options = Object.entries(PRODUCTS).map(([key, p]) => ({
-    label: p.name,
-    value: key,
-    description: `Cena: ${fmtPLN(p.pricePLN)} / szt.`
-  }));
-
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId("select_product")
-      .setPlaceholder("Wybierz produkt…")
-      .addOptions(options)
-  );
-}
-
-function paymentRow() {
-  return new ActionRowBuilder().addComponents(
+  const canPay = !!(state.productId && state.nick && !state.paid);
+  const row3 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId("pay_paypal")
-      .setLabel("Zapłać PayPal / Kartą")
-      .setStyle(ButtonStyle.Primary),
+      .setCustomId("shop:pay")
+      .setStyle(ButtonStyle.Success)
+      .setLabel("Zapłać (PayPal)")
+      .setEmoji("💸")
+      .setDisabled(!canPay),
     new ButtonBuilder()
-      .setCustomId("cancel_order")
-      .setLabel("Anuluj")
+      .setCustomId("shop:cancel")
       .setStyle(ButtonStyle.Danger)
+      .setLabel("Anuluj")
+      .setEmoji("🗑️"),
+    new ButtonBuilder()
+      .setCustomId("shop:close")
+      .setStyle(ButtonStyle.Secondary)
+      .setLabel("Zamknij ticket")
+      .setEmoji("🔒")
   );
+
+  // Jeśli jest zamówienie, pokaż row z check
+  const rows = [row1, row2, row3];
+
+  if (state.orderId && !state.paid) {
+    rows.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("shop:checkPayment")
+          .setStyle(ButtonStyle.Primary)
+          .setLabel("Sprawdź płatność")
+          .setEmoji("✅"),
+        new ButtonBuilder()
+          .setCustomId("shop:resetPayment")
+          .setStyle(ButtonStyle.Secondary)
+          .setLabel("Reset płatności")
+          .setEmoji("🔁")
+      )
+    );
+  }
+
+  return { embeds: [embed], components: rows };
 }
 
-function nickModal() {
-  const modal = new ModalBuilder()
-    .setCustomId("nick_modal")
-    .setTitle("Nick z Minecrafta");
+// ===================== TICKET SECURITY =====================
+function canCreateTicket(userId) {
+  const now = Date.now();
+  const cd = createCooldown.get(userId) || 0;
 
-  const input = new TextInputBuilder()
-    .setCustomId("mc_nick")
-    .setLabel("Wpisz swój nick (dokładnie)")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setMinLength(3)
-    .setMaxLength(16);
+  if (now - cd < COOLDOWN_MS) {
+    const s = Math.ceil((COOLDOWN_MS - (now - cd)) / 1000);
+    return { ok: false, reason: `⏳ Poczekaj **${s}s** i spróbuj ponownie.` };
+  }
 
-  modal.addComponents(new ActionRowBuilder().addComponents(input));
-  return modal;
+  if (activeTicketsByUser.has(userId)) {
+    return { ok: false, reason: `❌ Masz już ticket: <#${activeTicketsByUser.get(userId)}>` };
+  }
+
+  createCooldown.set(userId, now);
+  return { ok: true };
 }
 
-function amountModal(min = 1) {
-  const modal = new ModalBuilder()
-    .setCustomId("amount_modal")
-    .setTitle("Ilość");
-
-  const input = new TextInputBuilder()
-    .setCustomId("amount")
-    .setLabel(`Podaj ilość (min. ${min})`)
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  modal.addComponents(new ActionRowBuilder().addComponents(input));
-  return modal;
+function cleanupTicket(channelId) {
+  const s = stateStore.get(channelId);
+  if (s?.ownerId) activeTicketsByUser.delete(s.ownerId);
+  stateStore.delete(channelId);
 }
 
-client.once("ready", async () => {
+// ===================== DISCORD EVENTS =====================
+client.on("ready", async () => {
   console.log(`✅ Zalogowano jako ${client.user.tag}`);
   await registerCommands();
 });
 
-// Ticket create helper
-async function createTicket(guild, user) {
-  if (!TICKET_CATEGORY_ID) throw new Error("Brak TICKET_CATEGORY_ID w ENV");
-
-  const channel = await guild.channels.create({
-    name: `zakup-${user.username}`.slice(0, 90),
-    type: ChannelType.GuildText,
-    parent: TICKET_CATEGORY_ID,
-    permissionOverwrites: [
-      { id: guild.roles.everyone.id, deny: ["ViewChannel"] },
-      { id: user.id, allow: ["ViewChannel", "SendMessages", "ReadMessageHistory"] }
-    ]
-  });
-
-  const emb = new EmbedBuilder()
-    .setTitle("🧾 Ticket zakupu — JustSky")
-    .setDescription([
-      "1) Wybierz produkt",
-      "2) Wpisz ilość",
-      "3) Wpisz nick",
-      "4) Kliknij **Zapłać**",
-      "",
-      "⚠️ Płatność jest automatyczna — po opłaceniu bot nada produkt na serwerze."
-    ].join("\n"));
-
-  await channel.send({ content: `<@${user.id}>`, embeds: [emb], components: [productSelectRow()] });
-  return channel;
-}
-
-// interaction handler
-client.on("interactionCreate", async (i) => {
+// Slash /setupshop
+client.on("interactionCreate", async (interaction) => {
   try {
-    // /panel
-    if (i.isChatInputCommand() && i.commandName === "panel") {
-      if (!SHOP_PANEL_CHANNEL_ID) {
-        return i.reply({ content: "❌ Brak SHOP_PANEL_CHANNEL_ID w ENV.", ephemeral: true });
+    if (interaction.isChatInputCommand()) {
+      if (interaction.commandName === "setupshop") {
+        // admin only
+        if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator)) {
+          return interaction.reply({ content: "❌ Tylko admin.", ephemeral: true });
+        }
+
+        const ch = await client.channels.fetch(SHOP_PANEL_CHANNEL_ID).catch(() => null);
+        if (!ch) return interaction.reply({ content: "❌ Nie mogę znaleźć kanału panelu.", ephemeral: true });
+
+        await ch.send({
+          embeds: [buildMainPanelEmbed()],
+          components: buildMainPanelComponents(),
+        });
+
+        return interaction.reply({ content: "✅ Panel wysłany.", ephemeral: true });
       }
-      const ch = await client.channels.fetch(SHOP_PANEL_CHANNEL_ID);
-      await ch.send(shopPanelMessage());
-      return i.reply({ content: "✅ Panel sklepu wysłany.", ephemeral: true });
     }
 
-    // buttons
-    if (i.isButton()) {
-      if (i.customId === "how_it_works") {
-        return i.reply({
-          content: "✅ Kup → Ticket → Wybór produktu/ilości/nick → PayPal → bot nadaje na serwerze.",
-          ephemeral: true
+    // Button / Select / Modal
+    if (interaction.isButton()) {
+      const id = interaction.customId;
+
+      // ===== open ticket =====
+      if (id === "shop:openTicket") {
+        const check = canCreateTicket(interaction.user.id);
+        if (!check.ok) return interaction.reply({ content: check.reason, ephemeral: true });
+
+        const guild = interaction.guild;
+        if (!guild) return interaction.reply({ content: "❌ Brak guild.", ephemeral: true });
+
+        const ticketName = `zakup-${interaction.user.username}`.toLowerCase().replace(/[^a-z0-9\-]/g, "");
+        const ticketChannel = await guild.channels.create({
+          name: ticketName.slice(0, 90),
+          type: ChannelType.GuildText,
+          parent: SHOP_TICKETS_CATEGORY_ID,
+          permissionOverwrites: [
+            { id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.ViewChannel] },
+            { id: interaction.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] },
+          ],
         });
+
+        activeTicketsByUser.set(interaction.user.id, ticketChannel.id);
+
+        const initState = {
+          ownerId: interaction.user.id,
+          productId: null,
+          qty: 1,
+          nick: null,
+          panelMessageId: null,
+          orderId: null,
+          paid: false,
+        };
+        stateStore.set(ticketChannel.id, initState);
+
+        const msg = await ticketChannel.send(buildTicketPanelMessage(initState));
+        initState.panelMessageId = msg.id;
+        stateStore.set(ticketChannel.id, initState);
+
+        return interaction.reply({ content: `✅ Ticket utworzony: <#${ticketChannel.id}>`, ephemeral: true });
       }
 
-      if (i.customId === "open_ticket") {
-        const ch = await createTicket(i.guild, i.user);
-        await log(`📩 Ticket: ${ch} utworzony przez ${i.user.tag}`);
-        return i.reply({ content: `✅ Utworzyłem ticket: ${ch}`, ephemeral: true });
+      // poniższe akcje tylko w ticketach + owner tylko
+      const channelId = interaction.channelId;
+      const s = stateStore.get(channelId);
+
+      if (id.startsWith("shop:") && id !== "shop:openTicket") {
+        if (!s) return interaction.reply({ content: "❌ To nie jest ticket sklepu.", ephemeral: true });
+        if (interaction.user.id !== s.ownerId && !interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator)) {
+          return interaction.reply({ content: "❌ To nie Twój ticket.", ephemeral: true });
+        }
       }
 
-      // pay
-      if (i.customId === "pay_paypal") {
-        const order = [...ORDERS.values()].find(o => o.channelId === i.channelId && o.userId === i.user.id && o.status === "READY_TO_PAY");
-        if (!order) return i.reply({ content: "❌ Najpierw wybierz produkt/ilość/nick.", ephemeral: true });
+      // ===== qty - =====
+      if (id === "shop:qtyMinus") {
+        if (!s.productId) return interaction.reply({ content: "❌ Najpierw wybierz produkt.", ephemeral: true });
 
-        const p = PRODUCTS[order.productKey];
-        const total = order.totalPLN;
+        const p = PRODUCTS[s.productId];
+        const next = clamp((s.qty || 1) - 1, p.minQty, p.maxQty);
+        s.qty = next;
+        stateStore.set(channelId, s);
 
-        const { paypalOrderId, approveUrl } = await paypalCreateOrder({
-          internalId: order.internalId,
+        const msg = await interaction.channel.messages.fetch(s.panelMessageId).catch(() => null);
+        if (msg) await msg.edit(buildTicketPanelMessage(s));
+
+        return interaction.deferUpdate();
+      }
+
+      // ===== qty + =====
+      if (id === "shop:qtyPlus") {
+        if (!s.productId) return interaction.reply({ content: "❌ Najpierw wybierz produkt.", ephemeral: true });
+
+        const p = PRODUCTS[s.productId];
+        const next = clamp((s.qty || 1) + 1, p.minQty, p.maxQty);
+        s.qty = next;
+        stateStore.set(channelId, s);
+
+        const msg = await interaction.channel.messages.fetch(s.panelMessageId).catch(() => null);
+        if (msg) await msg.edit(buildTicketPanelMessage(s));
+
+        return interaction.deferUpdate();
+      }
+
+      // ===== enter nick (MODAL) — FIX: zero reply/defer przed showModal =====
+      if (id === "shop:enterNick") {
+        const modal = new ModalBuilder()
+          .setCustomId("shop:nickModal")
+          .setTitle("Podaj nick (Minecraft)");
+
+        const nickInput = new TextInputBuilder()
+          .setCustomId("nick")
+          .setLabel("Nick z serwera (3-16 znaków)")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMinLength(3)
+          .setMaxLength(16)
+          .setPlaceholder("np. Arceris");
+
+        modal.addComponents(new ActionRowBuilder().addComponents(nickInput));
+
+        return interaction.showModal(modal);
+      }
+
+      // ===== pay =====
+      if (id === "shop:pay") {
+        if (s.paid) return interaction.reply({ content: "✅ Już opłacone.", ephemeral: true });
+        if (!s.productId) return interaction.reply({ content: "❌ Wybierz produkt.", ephemeral: true });
+        if (!s.nick) return interaction.reply({ content: "❌ Podaj nick.", ephemeral: true });
+
+        const p = PRODUCTS[s.productId];
+        const qty = clamp(s.qty || 1, p.minQty, p.maxQty);
+        s.qty = qty;
+
+        const total = calcTotal(p, qty);
+        const customId = `js_${channelId}_${interaction.user.id}_${Date.now()}`;
+
+        // utwórz order
+        const { orderId, approveLink } = await paypalCreateOrder({
           totalPLN: total,
-          description: `${p.name} x${order.amount} | Nick: ${order.mcNick}`
+          description: `${p.name} x${qty} dla ${s.nick}`,
+          customId,
         });
 
-        order.paypalOrderId = paypalOrderId;
-        order.status = "WAITING_PAYMENT";
+        s.orderId = orderId;
+        stateStore.set(channelId, s);
 
-        const emb = new EmbedBuilder()
-          .setTitle("💳 Płatność PayPal")
-          .setDescription([
-            `**Zamówienie:** \`${order.internalId}\``,
-            `**Produkt:** ${p.name}`,
-            `**Ilość:** ${order.amount}`,
-            `**Nick:** \`${order.mcNick}\``,
-            `**Suma:** ${fmtPLN(total)}`,
-            "",
-            "Kliknij link i zapłać:",
-            approveUrl || "(brak linku)"
-          ].join("\n"));
+        const msg = await interaction.channel.messages.fetch(s.panelMessageId).catch(() => null);
+        if (msg) await msg.edit(buildTicketPanelMessage(s));
 
-        await log(`💳 PayPal link: ${order.internalId} | ${i.user.tag} | ${p.name} x${order.amount} | ${fmtPLN(total)}`);
-        return i.reply({ embeds: [emb], ephemeral: false });
+        const payEmbed = new EmbedBuilder()
+          .setTitle("💸 Płatność PayPal")
+          .setColor(0x3498db)
+          .setDescription(
+            [
+              `**Produkt:** ${p.name}`,
+              `**Ilość:** ${qty}`,
+              `**Nick:** \`${s.nick}\``,
+              `**Kwota:** **${moneyPLN(total)}**`,
+              "",
+              "1) Kliknij link i zapłać",
+              "2) Wróć tutaj i kliknij **Sprawdź płatność**",
+            ].join("\n")
+          )
+          .addFields({ name: "Link do płatności", value: approveLink || "❌ brak (spróbuj ponownie)" });
+
+        return interaction.reply({ embeds: [payEmbed], ephemeral: true });
       }
 
-      if (i.customId === "cancel_order") {
-        // zamykamy ticket po anulowaniu
-        await i.reply({ content: "❌ Anulowano. Zamykam ticket.", ephemeral: true });
-        await log(`❌ Anulowano ticket ${i.channelId} przez ${i.user.tag}`);
-        setTimeout(() => i.channel.delete().catch(() => {}), 1500);
+      // ===== check payment =====
+      if (id === "shop:checkPayment") {
+        if (!s.orderId) return interaction.reply({ content: "❌ Brak płatności do sprawdzenia.", ephemeral: true });
+        if (s.paid) return interaction.reply({ content: "✅ Już opłacone.", ephemeral: true });
+
+        const p = s.productId ? PRODUCTS[s.productId] : null;
+        if (!p) return interaction.reply({ content: "❌ Brak produktu w stanie.", ephemeral: true });
+
+        await interaction.reply({ content: "🔎 Sprawdzam płatność…", ephemeral: true });
+
+        const order = await paypalGetOrder(s.orderId);
+
+        // status: CREATED / APPROVED / COMPLETED
+        if (order.status !== "APPROVED" && order.status !== "COMPLETED") {
+          return interaction.followUp({ content: `⏳ Jeszcze nieopłacone. Status PayPal: **${order.status}**`, ephemeral: true });
+        }
+
+        // capture jeśli trzeba
+        if (order.status === "APPROVED") {
+          const cap = await paypalCaptureOrder(s.orderId);
+          if (cap.status !== "COMPLETED") {
+            return interaction.followUp({ content: `❌ Capture nieudany. Status: **${cap.status}**`, ephemeral: true });
+          }
+        }
+
+        // wydanie
+        s.paid = true;
+        stateStore.set(channelId, s);
+
+        const cmds = buildCommands(p, s.nick, s.qty);
+
+        // kanał logów
+        const logCh = await client.channels.fetch(SHOP_LOG_CHANNEL_ID).catch(() => null);
+        if (logCh) {
+          const logEmbed = new EmbedBuilder()
+            .setTitle("✅ Nowa płatność — WYDANIE")
+            .setColor(0x2ecc71)
+            .addFields(
+              { name: "Użytkownik", value: `<@${interaction.user.id}>`, inline: true },
+              { name: "Produkt", value: p.name, inline: true },
+              { name: "Ilość", value: String(s.qty), inline: true },
+              { name: "Nick", value: `\`${s.nick}\``, inline: true },
+              { name: "OrderID", value: `\`${s.orderId}\``, inline: false },
+              { name: "Komendy", value: "```" + cmds.join("\n") + "```", inline: false },
+            );
+          await logCh.send({ embeds: [logEmbed] });
+        }
+
+        // opcjonalny webhook do MC (jeśli masz swój)
+        if (MC_WEBHOOK_URL) {
+          try {
+            await fetch(MC_WEBHOOK_URL, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                orderId: s.orderId,
+                productId: p.id,
+                productName: p.name,
+                qty: s.qty,
+                nick: s.nick,
+                commands: cmds,
+              }),
+            });
+          } catch (e) {
+            // nie przerywaj — logi i tak poszły
+            console.log("MC_WEBHOOK error:", e?.message || e);
+          }
+        }
+
+        // update panel
+        const panelMsg = await interaction.channel.messages.fetch(s.panelMessageId).catch(() => null);
+        if (panelMsg) await panelMsg.edit(buildTicketPanelMessage(s));
+
+        await interaction.followUp({ content: "✅ Płatność potwierdzona! Produkt zostanie wydany (logi poszły do administracji).", ephemeral: true });
+
+        return;
+      }
+
+      // ===== reset payment =====
+      if (id === "shop:resetPayment") {
+        s.orderId = null;
+        stateStore.set(channelId, s);
+
+        const msg = await interaction.channel.messages.fetch(s.panelMessageId).catch(() => null);
+        if (msg) await msg.edit(buildTicketPanelMessage(s));
+
+        return interaction.reply({ content: "🔁 Zresetowano płatność. Kliknij **Zapłać** jeszcze raz.", ephemeral: true });
+      }
+
+      // ===== cancel =====
+      if (id === "shop:cancel") {
+        s.productId = null;
+        s.qty = 1;
+        s.nick = null;
+        s.orderId = null;
+        s.paid = false;
+        stateStore.set(channelId, s);
+
+        const msg = await interaction.channel.messages.fetch(s.panelMessageId).catch(() => null);
+        if (msg) await msg.edit(buildTicketPanelMessage(s));
+
+        return interaction.reply({ content: "🗑️ Zresetowano formularz w tickecie.", ephemeral: true });
+      }
+
+      // ===== close =====
+      if (id === "shop:close") {
+        await interaction.reply({ content: "🔒 Zamykam ticket…", ephemeral: true });
+        cleanupTicket(channelId);
+
+        setTimeout(async () => {
+          try {
+            await interaction.channel.delete("Ticket zamknięty");
+          } catch {}
+        }, 1500);
+
         return;
       }
     }
 
-    // select product
-    if (i.isStringSelectMenu() && i.customId === "select_product") {
-      const key = i.values[0];
-      if (!PRODUCTS[key]) return i.reply({ content: "❌ Zły produkt.", ephemeral: true });
+    if (interaction.isStringSelectMenu()) {
+      if (interaction.customId !== "shop:selectProduct") return;
 
-      // zapis w pamięci, potem ilość i nick
-      const internalId = makeInternalId();
-      ORDERS.set(internalId, {
-        internalId,
-        userId: i.user.id,
-        channelId: i.channelId,
-        guildId: i.guildId,
-        productKey: key,
-        amount: null,
-        mcNick: null,
-        totalPLN: null,
-        status: "NEED_AMOUNT"
-      });
+      const channelId = interaction.channelId;
+      const s = stateStore.get(channelId);
+      if (!s) return interaction.reply({ content: "❌ To nie jest ticket sklepu.", ephemeral: true });
 
-      const min = PRODUCTS[key].minAmount || 1;
-      await i.showModal(amountModal(min));
-    }
-
-    // modals
-    if (i.isModalSubmit()) {
-      // amount modal
-      if (i.customId === "amount_modal") {
-        const amountRaw = i.fields.getTextInputValue("amount").trim();
-        const amount = Number(amountRaw);
-
-        const order = [...ORDERS.values()].find(o => o.channelId === i.channelId && o.userId === i.user.id && o.status === "NEED_AMOUNT");
-        if (!order) return i.reply({ content: "❌ Nie mogę znaleźć zamówienia.", ephemeral: true });
-
-        const p = PRODUCTS[order.productKey];
-        const min = p.minAmount || 1;
-
-        if (!Number.isInteger(amount) || amount < min || amount > 999999) {
-          return i.reply({ content: `❌ Zła ilość. Min: ${min}`, ephemeral: true });
-        }
-
-        order.amount = amount;
-        order.totalPLN = Number((p.pricePLN * amount).toFixed(2));
-        order.status = "NEED_NICK";
-
-        await i.reply({ content: `✅ Ilość ustawiona: **${amount}**. Teraz podaj nick.`, ephemeral: true });
-        return i.followUp({ ephemeral: true, content: "Otwieram okno na nick..." }).then(() => i.showModal(nickModal()));
+      if (interaction.user.id !== s.ownerId && !interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator)) {
+        return interaction.reply({ content: "❌ To nie Twój ticket.", ephemeral: true });
       }
 
-      // nick modal
-      if (i.customId === "nick_modal") {
-        const nick = i.fields.getTextInputValue("mc_nick").trim();
+      const productId = interaction.values[0];
+      const p = PRODUCTS[productId];
+      if (!p) return interaction.reply({ content: "❌ Nieznany produkt.", ephemeral: true });
 
-        const order = [...ORDERS.values()].find(o => o.channelId === i.channelId && o.userId === i.user.id && o.status === "NEED_NICK");
-        if (!order) return i.reply({ content: "❌ Nie mogę znaleźć zamówienia.", ephemeral: true });
+      s.productId = productId;
+      s.qty = clamp(s.qty || 1, p.minQty, p.maxQty);
+      s.orderId = null;
+      s.paid = false;
+      stateStore.set(channelId, s);
 
-        // prosta walidacja nicku MC
-        if (!/^[A-Za-z0-9_]{3,16}$/.test(nick)) {
-          return i.reply({ content: "❌ Zły nick. Dozwolone: litery/cyfry/_ (3-16).", ephemeral: true });
-        }
+      const msg = await interaction.channel.messages.fetch(s.panelMessageId).catch(() => null);
+      if (msg) await msg.edit(buildTicketPanelMessage(s));
 
-        order.mcNick = nick;
-        order.status = "READY_TO_PAY";
+      return interaction.deferUpdate();
+    }
 
-        const p = PRODUCTS[order.productKey];
-        const emb = new EmbedBuilder()
-          .setTitle("✅ Podsumowanie zamówienia")
-          .setDescription([
-            `**Zamówienie:** \`${order.internalId}\``,
-            `**Produkt:** ${p.name}`,
-            `**Ilość:** ${order.amount}`,
-            `**Nick:** \`${order.mcNick}\``,
-            `**Suma:** ${fmtPLN(order.totalPLN)}`,
-            "",
-            "Wybierz płatność:"
-          ].join("\n"));
+    if (interaction.isModalSubmit()) {
+      if (interaction.customId !== "shop:nickModal") return;
 
-        await log(`🧾 Zamówienie: ${order.internalId} | ${i.user.tag} | ${p.name} x${order.amount} | ${fmtPLN(order.totalPLN)} | nick ${nick}`);
-        return i.reply({ embeds: [emb], components: [paymentRow()], ephemeral: false });
+      const channelId = interaction.channelId;
+      const s = stateStore.get(channelId);
+      if (!s) return interaction.reply({ content: "❌ To nie jest ticket sklepu.", ephemeral: true });
+
+      if (interaction.user.id !== s.ownerId && !interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator)) {
+        return interaction.reply({ content: "❌ To nie Twój ticket.", ephemeral: true });
       }
-    }
 
-  } catch (e) {
-    console.error(e);
-    if (i && !i.replied) {
-      try { await i.reply({ content: "❌ Błąd. Sprawdź logi Render.", ephemeral: true }); } catch {}
+      const nick = interaction.fields.getTextInputValue("nick").trim();
+
+      if (!isValidMcNick(nick)) {
+        return interaction.reply({ content: "❌ Zły nick. Dozwolone: 3-16 znaków, litery/cyfry/_", ephemeral: true });
+      }
+
+      s.nick = nick;
+      s.orderId = null;
+      s.paid = false;
+      stateStore.set(channelId, s);
+
+      const msg = await interaction.channel.messages.fetch(s.panelMessageId).catch(() => null);
+      if (msg) await msg.edit(buildTicketPanelMessage(s));
+
+      return interaction.reply({ content: `✅ Nick ustawiony: **${nick}**. Teraz kliknij **Zapłać**.`, ephemeral: true });
     }
+  } catch (err) {
+    console.error(err);
+    try {
+      if (interaction && !interaction.replied && !interaction.deferred) {
+        await interaction.reply({ content: "❌ Wystąpił błąd. Sprawdź logi.", ephemeral: true });
+      }
+    } catch {}
   }
 });
 
-client.login(DISCORD_TOKEN);
-
-// ====== WEBHOOK SERVER ======
+// ===================== KEEP ALIVE (Render) =====================
 const app = express();
-app.use(express.json());
+app.get("/", (_, res) => res.send("OK"));
+app.listen(process.env.PORT || 3000, () => console.log("🌐 Web server OK"));
 
-app.get("/", (_, res) => res.send("JustSky Shop Bot online ✅"));
-
-// ZABEZPIECZONE: /paypal/webhook?token=TWÓJ_TOKEN
-app.post("/paypal/webhook", async (req, res) => {
-  try {
-    if (WEBHOOK_TOKEN && req.query.token !== WEBHOOK_TOKEN) {
-      return res.status(401).send("unauthorized");
-    }
-
-    const event = req.body;
-    const type = event.event_type;
-
-    if (type === "PAYMENT.CAPTURE.COMPLETED") {
-      const paypalOrderId =
-        event.resource?.supplementary_data?.related_ids?.order_id ||
-        event.resource?.supplementary_data?.related_ids?.order ||
-        null;
-
-      if (!paypalOrderId) return res.sendStatus(200);
-
-      const order = await paypalGetOrder(paypalOrderId);
-      const internalId = order.purchase_units?.[0]?.custom_id;
-
-      if (!internalId) return res.sendStatus(200);
-
-      const stored = [...ORDERS.values()].find(o => o.internalId === internalId);
-      if (!stored) return res.sendStatus(200);
-      if (stored.status === "PAID") return res.sendStatus(200);
-
-      stored.status = "PAID";
-
-      // Nadaj na serwerze (RCON -> komenda pluginu)
-      const p = PRODUCTS[stored.productKey];
-      const cmd = renderCommand(p.command, stored.mcNick, stored.amount);
-
-      let rconRes = "";
-      try {
-        rconRes = await runRconCommand(cmd);
-      } catch (err) {
-        await log(`⚠️ OPŁACONE, ALE RCON PADŁ: ${stored.internalId} | cmd: \`${cmd}\``);
-        return res.sendStatus(200);
-      }
-
-      // info na ticket
-      try {
-        const ch = await client.channels.fetch(stored.channelId);
-        if (ch) {
-          const emb = new EmbedBuilder()
-            .setTitle("✅ Płatność potwierdzona")
-            .setDescription([
-              `**Zamówienie:** \`${stored.internalId}\``,
-              `**Produkt:** ${p.name}`,
-              `**Ilość:** ${stored.amount}`,
-              `**Nick:** \`${stored.mcNick}\``,
-              "",
-              `✅ Nadano na serwerze komendą:`,
-              `\`${cmd}\``
-            ].join("\n"));
-          await ch.send({ embeds: [emb] });
-          await ch.send({ content: "Ticket zamknie się za 30 sekund." });
-          setTimeout(() => ch.delete().catch(() => {}), 30000);
-        }
-      } catch {}
-
-      await log(`✅ OPŁACONE + NADANE: ${stored.internalId} | ${stored.productKey} x${stored.amount} | nick ${stored.mcNick} | cmd: ${cmd} | rcon: ${String(rconRes).slice(0,200)}`);
-      return res.sendStatus(200);
-    }
-
-    return res.sendStatus(200);
-  } catch (e) {
-    console.error("Webhook error:", e);
-    return res.sendStatus(200);
-  }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("🌐 Webhook server działa na porcie", PORT));
-
+// ===================== START =====================
+client.login(DISCORD_TOKEN);
